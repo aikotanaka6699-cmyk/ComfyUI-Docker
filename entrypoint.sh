@@ -9,8 +9,9 @@ PGID=${PGID:-1000}
 BASE_DIR=/app/ComfyUI
 CUSTOM_NODES_DIR="$BASE_DIR/custom_nodes"
 
-# If running as root, map to requested UID/GID and re-exec as the app user
+# If running as root, map to requested UID/GID, fix ownership, and make system install targets writable
 if [ "$(id -u)" = "0" ]; then
+  # Map group
   if getent group "${PGID}" >/dev/null; then
     EXISTING_GRP="$(getent group "${PGID}" | cut -d: -f1)"
     usermod -g "${EXISTING_GRP}" "${APP_USER}" || true
@@ -18,15 +19,45 @@ if [ "$(id -u)" = "0" ]; then
   else
     groupmod -o -g "${PGID}" "${APP_GROUP}" || true
   fi
+
+  # Map user
   usermod -o -u "${PUID}" "${APP_USER}" || true
+
+  # Ensure home and app dir exist and are owned
   mkdir -p "/home/${APP_USER}"
   for d in "$BASE_DIR" "/home/$APP_USER"; do
     [ -e "$d" ] && chown -R "${APP_USER}:${APP_GROUP}" "$d" || true
   done
+
+  # Make Python "system" install targets writable for the runtime user
+  # This covers packages (purelib/platlib), console scripts (scripts), and headers (include/platinclude)
+  # Discard anything not under /usr/local to avoid over-broad changes.
+  readarray -t PY_PATHS < <(python - <<'PY'
+import sysconfig
+keys = ("purelib","platlib","scripts","include","platinclude")
+p = sysconfig.get_paths()
+for k in keys:
+    v = p.get(k)
+    if v:
+        print(v)
+PY
+  )
+  for d in "${PY_PATHS[@]}"; do
+    case "$d" in
+      /usr/local/*)
+        mkdir -p "$d" || true
+        chown -R "${APP_USER}:${APP_GROUP}" "$d" || true
+        chmod -R u+rwX,g+rwX "$d" || true
+        ;;
+      *) : ;;
+    esac
+  done
+
+  # Re-exec as the runtime user
   exec runuser -u "${APP_USER}" -- "$0" "$@"
 fi
 
-# Ensure ComfyUI-Manager (bind mounts can hide baked content)
+# Ensure ComfyUI-Manager exists (bind mounts can hide baked content)
 if [ ! -d "$CUSTOM_NODES_DIR/ComfyUI-Manager" ]; then
   echo "[bootstrap] Installing ComfyUI-Manager into $CUSTOM_NODES_DIR/ComfyUI-Manager"
   git clone --depth 1 https://github.com/ltdrdata/ComfyUI-Manager.git "$CUSTOM_NODES_DIR/ComfyUI-Manager" || true
