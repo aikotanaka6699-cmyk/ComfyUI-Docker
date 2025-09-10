@@ -1,0 +1,44 @@
+name: Cleanup GHCR Untagged (deferred/manual)
+
+on:
+  workflow_run:
+    workflows: ["Sync Fork and Build Docker Image on Upstream Release"]
+    types: [completed]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  packages: write
+
+jobs:
+  deferred-cleanup:
+    # only run automatically if the upstream workflow finished successfully
+    if: ${{ github.event_name == 'workflow_dispatch' || github.event.workflow_run.conclusion == 'success' }}
+    runs-on: ubuntu-latest
+    steps:
+      - name: Wait 60 minutes (allow registry to settle)
+        if: ${{ github.event_name != 'workflow_dispatch' }}
+        run: sleep 3600
+        shell: bash
+
+      - name: Select cleanup token
+        id: token
+        shell: bash
+        run: |
+          if [ -n "${{ secrets.CR_PAT }}" ]; then
+            echo "token=${{ secrets.CR_PAT }}" >> "$GITHUB_OUTPUT"
+          else
+            echo "token=${{ secrets.GITHUB_TOKEN }}" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Prune untagged GHCR versions (multi-arch safe)
+        uses: dataaxiom/ghcr-cleanup-action@v1
+        with:
+          token: ${{ steps.token.outputs.token }}
+          owner: ${{ github.repository_owner }}
+          repository: ${{ github.event.repository.name }}
+          package: comfyui-docker
+          delete-untagged: true
+          older-than: '15 minutes'
+          delete-partial-images: true
+          dry-run: false
