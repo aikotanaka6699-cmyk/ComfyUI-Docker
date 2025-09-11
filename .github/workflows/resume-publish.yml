@@ -1,0 +1,115 @@
+name: Resume Publish (manual)
+
+on:
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Tag to publish (leave empty to use latest upstream)"
+        required: false
+        type: string
+
+permissions:
+  contents: write
+  packages: read
+
+env:
+  IMAGE_NAME: ghcr.io/${{ github.repository_owner }}/comfyui-docker
+  PACKAGE_NAME: comfyui-docker
+
+jobs:
+  resume-publish:
+    runs-on: ubuntu-latest
+    # Guard with always() so this job never gets skipped due to previous runs
+    if: ${{ always() }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          fetch-tags: true
+
+      - name: Ensure jq and curl
+        run: |
+          set -e
+          if ! command -v jq >/dev/null 2>&1; then
+            sudo apt-get update -y
+            sudo apt-get install -y jq curl
+          fi
+
+      - name: Resolve tag (input or latest upstream)
+        id: resolve
+        shell: bash
+        run: |
+          set -euo pipefail
+          TAG="${{ github.event.inputs.tag }}"
+          if [ -z "${TAG}" ]; then
+            TAG="$(curl -fsSL "https://api.github.com/repos/comfyanonymous/ComfyUI/releases/latest" | jq -r .tag_name)"
+          fi
+          if [ -z "${TAG}" ] || [ "${TAG}" = "null" ]; then
+            echo "No tag found to publish." >&2
+            exit 1
+          fi
+          echo "tag=${TAG}" >> "$GITHUB_OUTPUT"
+
+      - name: Verify GHCR image tag exists
+        id: verify
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          OWNER="${{ github.repository_owner }}"
+          PKG="${PACKAGE_NAME}"
+          TAG="${{ steps.resolve.outputs.tag }}"
+
+          auth_hdr="Authorization: Bearer ${GITHUB_TOKEN}"
+          accept_hdr="Accept: application/vnd.github+json"
+
+          # Try org endpoint then user endpoint
+          url_org="https://api.github.com/orgs/${OWNER}/packages/container/${PKG}/versions?per_page=100"
+          url_usr="https://api.github.com/users/${OWNER}/packages/container/${PKG}/versions?per_page=100"
+
+          fetch() {
+            curl -fsSL -H "${auth_hdr}" -H "${accept_hdr}" "$1" || true
+          }
+
+          data="$(fetch "${url_org}")"
+          if [ -z "${data}" ]; then
+            data="$(fetch "${url_usr}")"
+          fi
+          if [ -z "${data}" ]; then
+            echo "found=false" >> "$GITHUB_OUTPUT"
+            echo "Could not read GHCR versions for ${OWNER}/${PKG}" >&2
+            exit 1
+          fi
+
+          # Look for version that lists the tag
+          match="$(echo "${data}" | jq -r --arg T "${TAG}" '.[] | select(.metadata.container.tags!=null) | select(.metadata.container.tags[]==$T) | .id' | head -n1)"
+          if [ -n "${match}" ]; then
+            echo "found=true" >> "$GITHUB_OUTPUT"
+            echo "Found GHCR version for tag ${TAG}"
+          else
+            echo "found=false" >> "$GITHUB_OUTPUT"
+            echo "No GHCR version found for tag ${TAG}" >&2
+          fi
+
+      - name: Publish/Update GitHub Release
+        # Run only if the image tag is present (true resume of skipped publish)
+        if: ${{ steps.verify.outputs.found == 'true' }}
+        uses: softprops/action-gh-release@v2
+        with:
+          token: ${{ secrets.GITHUB_TOKEN }}
+          tag_name: ${{ steps.resolve.outputs.tag }}
+          name: Release ${{ steps.resolve.outputs.tag }}
+          body: |
+            Resumed publish for tag ${{ steps.resolve.outputs.tag }}.
+            Docker image:
+            - docker pull ${{ env.IMAGE_NAME }}:${{ steps.resolve.outputs.tag }}
+            - docker pull ${{ env.IMAGE_NAME }}:latest
+          draft: false
+          prerelease: false
+
+      - name: Fail if image tag not found (nothing to publish)
+        if: ${{ steps.verify.outputs.found != 'true' }}
+        run: |
+          echo "GHCR image for tag '${{ steps.resolve.outputs.tag }}' was not found; nothing to publish." >&2
+          exit 1
