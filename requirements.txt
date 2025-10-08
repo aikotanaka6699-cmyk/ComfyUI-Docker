@@ -21,6 +21,9 @@ psutil
 alembic
 SQLAlchemy
 av>=14.2.0
+triton
+sageattention
+
 
 #non essential dependencies:
 kornia>=0.7.1
