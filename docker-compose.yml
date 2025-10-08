@@ -1,0 +1,29 @@
+services:
+  comfyui:
+    build:
+      context: ./
+      dockerfile: Dockerfile
+
+    container_name: ComfyUI
+    runtime: nvidia
+    restart: unless-stopped
+    ports:
+      - 8188:8188
+    environment:
+      - TZ=America/Edmonton
+      - PUID=1000
+      - GUID=1000
+      #- COMFYUI_SOME_ENV_VAR=SOME_VALUE
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: all
+              capabilities: [gpu]
+    volumes:
+      - /home/kyo-ubuntu/comfyui/user/default:/app/ComfyUI/user/default
+      - /home/kyo-ubuntu/comfyui/custom_nodes:/app/ComfyUI/custom_nodes
+      - /home/kyo-ubuntu/comfyui/models:/app/ComfyUI/models
+      - /home/kyo-ubuntu/comfyui/input:/app/ComfyUI/input
+      - /home/kyo-ubuntu/comfyui/output:/app/ComfyUI/output
